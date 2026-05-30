@@ -1,1 +1,197 @@
-{"name": "WF-TRS-01 \u00e2\u20ac\u201d Cualificaci\u00c3\u00b3n y Enrutamiento de Leads V10V", "nodes": [{"parameters": {"httpMethod": "POST", "path": "wf-trs-01/lead", "responseMode": "responseNode", "options": {}}, "id": "trs01-001", "name": "TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [240, 300], "webhookId": "wf-trs01-lead"}, {"parameters": {"url": "https://company.clearbit.com/v2/combined/find", "sendHeaders": true, "headerParameters": {"parameters": [{"name": "Authorization", "value": "Bearer {{ $env.CLEARBIT_API_KEY }}"}]}, "sendQuery": true, "queryParameters": {"parameters": [{"name": "email", "value": "={{ $json.email }}"}, {"name": "given_name", "value": "={{ $json.first_name }}"}, {"name": "family_name", "value": "={{ $json.last_name }}"}]}, "options": {"timeout": 8000}}, "id": "trs01-002", "name": "ENRICH \u00e2\u20ac\u201d Clearbit Company + Person", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [440, 300]}, {"parameters": {"resource": "chat", "operation": "message", "model": "gpt-4o-mini", "messages": {"values": [{"role": "system", "content": "Eres un SDR experto. Eval\u00c3\u00baa leads usando el framework BANT (Budget, Authority, Need, Timeline) y MEDDIC (Metrics, Economic Buyer, Decision Criteria, Decision Process, Identify Pain, Champion). Devuelve SIEMPRE JSON."}, {"role": "user", "content": "=DATOS DEL LEAD:\nNombre: {{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.first_name }} {{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.last_name }}\nEmail: {{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.email }}\nEmpresa: {{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.company }}\nCargo: {{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.job_title }}\nTel\u00c3\u00a9fono: {{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.phone || 'N/A' }}\nMensaje/Inter\u00c3\u00a9s: {{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.message || 'N/A' }}\nFuente: {{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.source || 'web' }}\n\nDATO ENRIQUECIDO (Clearbit):\n{{ JSON.stringify($input.first().json, null, 2) }}\n\nCalcula el score BANT/MEDDIC (0-100) y clasifica como MQL/SQL/DISQUALIFIED.\n\nResponde en JSON:\n{\n  \"bant_score\": 0-100,\n  \"meddic_score\": 0-100,\n  \"final_score\": 0-100,\n  \"classification\": \"MQL|SQL|DISQUALIFIED\",\n  \"priority\": \"HIGH|MEDIUM|LOW\",\n  \"reason\": \"string\",\n  \"budget_signal\": \"CONFIRMED|LIKELY|UNKNOWN|UNLIKELY\",\n  \"authority_signal\": \"DECISION_MAKER|INFLUENCER|UNKNOWN\",\n  \"need_signal\": \"STRONG|MODERATE|WEAK\",\n  \"timeline_signal\": \"IMMEDIATE|30_DAYS|90_DAYS|UNKNOWN\",\n  \"recommended_action\": \"CALL_NOW|SEQUENCE_HOT|SEQUENCE_NURTURE|DISQUALIFY\",\n  \"call_script_hook\": \"string (apertura personalizada para llamada)\"\n}"}]}, "options": {"maxTokens": 1000, "temperature": 0.1}}, "id": "trs01-003", "name": "AI/ML \u00e2\u20ac\u201d BANT/MEDDIC Score", "type": "@n8n/n8n-nodes-langchain.openAi", "typeVersion": 1, "position": [640, 300]}, {"parameters": {"jsCode": "const raw = $input.first().json.message?.content || '{}';\nconst trigger = $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json;\nconst enriched = $('ENRICH \u00e2\u20ac\u201d Clearbit Company + Person').first().json;\nlet score;\ntry { score = JSON.parse(raw.match(/\\{[\\s\\S]*\\}/)?.[0] || raw); } catch(e) { score = { final_score: 0, classification: 'MQL', priority: 'LOW', recommended_action: 'SEQUENCE_NURTURE' }; }\nscore.lead_id = trigger.lead_id || `TRS01-${Date.now()}`;\nscore.email = trigger.email;\nscore.full_name = `${trigger.first_name || ''} ${trigger.last_name || ''}`.trim();\nscore.company = trigger.company || enriched?.company?.name || '';\nscore.job_title = trigger.job_title || enriched?.person?.employment?.title || '';\nscore.phone = trigger.phone || enriched?.person?.phone || '';\nscore.company_size = enriched?.company?.metrics?.employees || 'UNKNOWN';\nscore.company_revenue = enriched?.company?.metrics?.annualRevenue || null;\nscore.linkedin_url = enriched?.person?.linkedin?.handle ? `https://linkedin.com/in/${enriched.person.linkedin.handle}` : null;\nscore.response_time_target_minutes = score.classification === 'SQL' ? 5 : score.classification === 'MQL' ? 60 : 1440;\nscore.workflow_id = 'WF-TRS-01';\nscore.processed_at = new Date().toISOString();\nreturn [{ json: score }];"}, "id": "trs01-004", "name": "LOGIC \u00e2\u20ac\u201d Parse Score + Enrich Profile", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [840, 300]}, {"parameters": {"conditions": {"conditions": [{"id": "is-sql", "leftValue": "={{ $json.classification }}", "rightValue": "SQL", "operator": {"type": "string", "operation": "equals"}}]}}, "id": "trs01-005", "name": "LOGIC \u00e2\u20ac\u201d SQL vs MQL vs DQ", "type": "n8n-nodes-base.if", "typeVersion": 2, "position": [1040, 300]}, {"parameters": {"url": "={{ $env.V10V_API_URL }}/api/wf-trs-01/crm-update", "sendBody": true, "bodyParameters": {"parameters": [{"name": "lead_data", "value": "={{ JSON.stringify($json) }}"}, {"name": "stage", "value": "SQL"}, {"name": "owner", "value": "={{ $env.SQL_OWNER_ID }}"}]}}, "id": "trs01-006", "name": "ACTION \u00e2\u20ac\u201d CRM Update SQL (Salesforce/HubSpot)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1240, 180]}, {"parameters": {"authentication": "predefinedCredentialType", "nodeCredentialType": "slackApi", "resource": "message", "channel": "={{ $env.SLACK_SALES_CHANNEL }}", "text": "=\u00f0\u0178\u201d\u00a5 *SQL CALIFICADO* \u00e2\u20ac\u201d WF-TRS-01\n\n*Nombre:* {{ $json.full_name }}\n*Empresa:* {{ $json.company }} ({{ $json.company_size }} empleados)\n*Cargo:* {{ $json.job_title }}\n*Score:* {{ $json.final_score }}/100\n*BANT:* {{ $json.bant_score }} | *MEDDIC:* {{ $json.meddic_score }}\n*Presupuesto:* {{ $json.budget_signal }} | *Autoridad:* {{ $json.authority_signal }}\n*Timeline:* {{ $json.timeline_signal }}\n\n*Raz\u00c3\u00b3n:* {{ $json.reason }}\n\n\u00e2\u0161\u00a1 *Acci\u00c3\u00b3n:* Llamar en <{{ $json.response_time_target_minutes }} minutos\n*Hook:* {{ $json.call_script_hook }}\n\n{{ $json.linkedin_url ? '\u00f0\u0178\u201d\u2014 LinkedIn: ' + $json.linkedin_url : '' }}\n\u00f0\u0178\u201c\u017e {{ $json.phone || 'Sin tel\u00c3\u00a9fono \u00e2\u20ac\u201d usar email' }}"}, "id": "trs01-007", "name": "ACTION \u00e2\u20ac\u201d Slack Alert SQL (SDR en <5min)", "type": "n8n-nodes-base.slack", "typeVersion": 2.2, "position": [1240, 340]}, {"parameters": {"url": "={{ $env.V10V_API_URL }}/api/wf-trs-01/sequence", "sendBody": true, "bodyParameters": {"parameters": [{"name": "lead_id", "value": "={{ $json.lead_id }}"}, {"name": "sequence_type", "value": "={{ $json.classification === 'MQL' ? 'HOT_NURTURE' : 'DISQUALIFY' }}"}, {"name": "score", "value": "={{ $json.final_score }}"}, {"name": "email", "value": "={{ $json.email }}"}]}}, "id": "trs01-008", "name": "ACTION \u00e2\u20ac\u201d Enroll en Secuencia Nurture/DQ", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1240, 500]}, {"parameters": {"url": "={{ $env.V10V_API_URL }}/api/wf-trs-01/baseline", "sendBody": true, "bodyParameters": {"parameters": [{"name": "lead_id", "value": "={{ $json.lead_id }}"}, {"name": "classification", "value": "={{ $json.classification }}"}, {"name": "final_score", "value": "={{ $json.final_score }}"}, {"name": "source", "value": "={{ $('TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo').first().json.source || 'web' }}"}]}}, "id": "trs01-009", "name": "BASELINE \u00e2\u20ac\u201d M\u00c3\u00a9tricas Pipeline", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1440, 340]}, {"parameters": {"respondWith": "json", "responseBody": "={{ JSON.stringify({ success: true, lead_id: $('LOGIC \u00e2\u20ac\u201d Parse Score + Enrich Profile').first().json.lead_id, classification: $('LOGIC \u00e2\u20ac\u201d Parse Score + Enrich Profile').first().json.classification, final_score: $('LOGIC \u00e2\u20ac\u201d Parse Score + Enrich Profile').first().json.final_score, response_time_minutes: $('LOGIC \u00e2\u20ac\u201d Parse Score + Enrich Profile').first().json.response_time_target_minutes, workflow_id: 'WF-TRS-01' }) }}"}, "id": "trs01-010", "name": "RESPOND \u00e2\u20ac\u201d Return Qualification", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1, "position": [1640, 340]}], "connections": {"TRIGGER \u00e2\u20ac\u201d Webhook Lead Nuevo": {"main": [[{"node": "ENRICH \u00e2\u20ac\u201d Clearbit Company + Person", "type": "main", "index": 0}]]}, "ENRICH \u00e2\u20ac\u201d Clearbit Company + Person": {"main": [[{"node": "AI/ML \u00e2\u20ac\u201d BANT/MEDDIC Score", "type": "main", "index": 0}]]}, "AI/ML \u00e2\u20ac\u201d BANT/MEDDIC Score": {"main": [[{"node": "LOGIC \u00e2\u20ac\u201d Parse Score + Enrich Profile", "type": "main", "index": 0}]]}, "LOGIC \u00e2\u20ac\u201d Parse Score + Enrich Profile": {"main": [[{"node": "LOGIC \u00e2\u20ac\u201d SQL vs MQL vs DQ", "type": "main", "index": 0}]]}, "LOGIC \u00e2\u20ac\u201d SQL vs MQL vs DQ": {"main": [[{"node": "ACTION \u00e2\u20ac\u201d CRM Update SQL (Salesforce/HubSpot)", "type": "main", "index": 0}, {"node": "ACTION \u00e2\u20ac\u201d Slack Alert SQL (SDR en <5min)", "type": "main", "index": 0}], [{"node": "ACTION \u00e2\u20ac\u201d Enroll en Secuencia Nurture/DQ", "type": "main", "index": 0}]]}, "ACTION \u00e2\u20ac\u201d CRM Update SQL (Salesforce/HubSpot)": {"main": [[{"node": "BASELINE \u00e2\u20ac\u201d M\u00c3\u00a9tricas Pipeline", "type": "main", "index": 0}]]}, "ACTION \u00e2\u20ac\u201d Slack Alert SQL (SDR en <5min)": {"main": [[{"node": "BASELINE \u00e2\u20ac\u201d M\u00c3\u00a9tricas Pipeline", "type": "main", "index": 0}]]}, "ACTION \u00e2\u20ac\u201d Enroll en Secuencia Nurture/DQ": {"main": [[{"node": "BASELINE \u00e2\u20ac\u201d M\u00c3\u00a9tricas Pipeline", "type": "main", "index": 0}]]}, "BASELINE \u00e2\u20ac\u201d M\u00c3\u00a9tricas Pipeline": {"main": [[{"node": "RESPOND \u00e2\u20ac\u201d Return Qualification", "type": "main", "index": 0}]]}}, "settings": {"executionOrder": "v1", "saveManualExecutions": true}, "tags": [{"name": "v10v-certified"}, {"name": "lead-qualification"}, {"name": "bant-meddic"}, {"name": "quick-win"}], "meta": {"instanceId": "v10v-cerebro", "description": "WF-TRS-01: Cualificaci\u00c3\u00b3n BANT/MEDDIC autom\u00c3\u00a1tica. Lead entra \u00e2\u2020\u2019 Clearbit enriquece \u00e2\u2020\u2019 GPT-4o-mini clasifica SQL/MQL/DQ con score 0-100 \u00e2\u2020\u2019 SQL: Slack alerta SDR en <5 min + CRM update. MQL: secuencia nurture personalizada. DQ: marcado en CRM. Payback <1-3 meses.", "roi_data": {"response_time_reduction": "de 4h a <5min para SQL", "conversion_rate_improvement": "28% m\u00c3\u00a1s conversiones por respuesta r\u00c3\u00a1pida", "price_administered_eur_month": 500, "target_mrr": 500}, "tech_stack": {"enrich": "Clearbit Combined API", "ai": "GPT-4o-mini (BANT/MEDDIC)", "crm": "Salesforce/HubSpot/Pipedrive", "alerts": "Slack"}}}
+{
+  "name": "WF-TRS-01 — Cualificación y Enrutamiento de Leads V10V",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wf-trs-01/lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "trs01-001",
+      "name": "TRIGGER — Webhook Lead Nuevo",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "wf-trs01-lead"
+    },
+    {
+      "parameters": {
+        "url": "https://company.clearbit.com/v2/combined/find",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "Bearer {{ $env.CLEARBIT_API_KEY }}" }]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "email", "value": "={{ $json.email }}" },
+            { "name": "given_name", "value": "={{ $json.first_name }}" },
+            { "name": "family_name", "value": "={{ $json.last_name }}" }
+          ]
+        },
+        "options": { "timeout": 8000 }
+      },
+      "id": "trs01-002",
+      "name": "ENRICH — Clearbit Company + Person",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "message",
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Eres un SDR experto. Evalúa leads usando el framework BANT (Budget, Authority, Need, Timeline) y MEDDIC (Metrics, Economic Buyer, Decision Criteria, Decision Process, Identify Pain, Champion). Devuelve SIEMPRE JSON."
+            },
+            {
+              "role": "user",
+              "content": "=DATOS DEL LEAD:\nNombre: {{ $('TRIGGER — Webhook Lead Nuevo').first().json.first_name }} {{ $('TRIGGER — Webhook Lead Nuevo').first().json.last_name }}\nEmail: {{ $('TRIGGER — Webhook Lead Nuevo').first().json.email }}\nEmpresa: {{ $('TRIGGER — Webhook Lead Nuevo').first().json.company }}\nCargo: {{ $('TRIGGER — Webhook Lead Nuevo').first().json.job_title }}\nTeléfono: {{ $('TRIGGER — Webhook Lead Nuevo').first().json.phone || 'N/A' }}\nMensaje/Interés: {{ $('TRIGGER — Webhook Lead Nuevo').first().json.message || 'N/A' }}\nFuente: {{ $('TRIGGER — Webhook Lead Nuevo').first().json.source || 'web' }}\n\nDATO ENRIQUECIDO (Clearbit):\n{{ JSON.stringify($input.first().json, null, 2) }}\n\nCalcula el score BANT/MEDDIC (0-100) y clasifica como MQL/SQL/DISQUALIFIED.\n\nResponde en JSON:\n{\n  \"bant_score\": 0-100,\n  \"meddic_score\": 0-100,\n  \"final_score\": 0-100,\n  \"classification\": \"MQL|SQL|DISQUALIFIED\",\n  \"priority\": \"HIGH|MEDIUM|LOW\",\n  \"reason\": \"string\",\n  \"budget_signal\": \"CONFIRMED|LIKELY|UNKNOWN|UNLIKELY\",\n  \"authority_signal\": \"DECISION_MAKER|INFLUENCER|UNKNOWN\",\n  \"need_signal\": \"STRONG|MODERATE|WEAK\",\n  \"timeline_signal\": \"IMMEDIATE|30_DAYS|90_DAYS|UNKNOWN\",\n  \"recommended_action\": \"CALL_NOW|SEQUENCE_HOT|SEQUENCE_NURTURE|DISQUALIFY\",\n  \"call_script_hook\": \"string (apertura personalizada para llamada)\"\n}"
+            }
+          ]
+        },
+        "options": { "maxTokens": 1000, "temperature": 0.1 }
+      },
+      "id": "trs01-003",
+      "name": "AI/ML — BANT/MEDDIC Score",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.message?.content || '{}';\nconst trigger = $('TRIGGER — Webhook Lead Nuevo').first().json;\nconst enriched = $('ENRICH — Clearbit Company + Person').first().json;\nlet score;\ntry { score = JSON.parse(raw.match(/\\{[\\s\\S]*\\}/)?.[0] || raw); } catch(e) { score = { final_score: 0, classification: 'MQL', priority: 'LOW', recommended_action: 'SEQUENCE_NURTURE' }; }\nscore.lead_id = trigger.lead_id || `TRS01-${Date.now()}`;\nscore.email = trigger.email;\nscore.full_name = `${trigger.first_name || ''} ${trigger.last_name || ''}`.trim();\nscore.company = trigger.company || enriched?.company?.name || '';\nscore.job_title = trigger.job_title || enriched?.person?.employment?.title || '';\nscore.phone = trigger.phone || enriched?.person?.phone || '';\nscore.company_size = enriched?.company?.metrics?.employees || 'UNKNOWN';\nscore.company_revenue = enriched?.company?.metrics?.annualRevenue || null;\nscore.linkedin_url = enriched?.person?.linkedin?.handle ? `https://linkedin.com/in/${enriched.person.linkedin.handle}` : null;\nscore.response_time_target_minutes = score.classification === 'SQL' ? 5 : score.classification === 'MQL' ? 60 : 1440;\nscore.workflow_id = 'WF-TRS-01';\nscore.processed_at = new Date().toISOString();\nreturn [{ json: score }];"
+      },
+      "id": "trs01-004",
+      "name": "LOGIC — Parse Score + Enrich Profile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "id": "is-sql", "leftValue": "={{ $json.classification }}", "rightValue": "SQL", "operator": { "type": "string", "operation": "equals" } }]
+        }
+      },
+      "id": "trs01-005",
+      "name": "LOGIC — SQL vs MQL vs DQ",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1040, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-trs-01/crm-update",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "lead_data", "value": "={{ JSON.stringify($json) }}" },
+            { "name": "stage", "value": "SQL" },
+            { "name": "owner", "value": "={{ $env.SQL_OWNER_ID }}" }
+          ]
+        }
+      },
+      "id": "trs01-006",
+      "name": "ACTION — CRM Update SQL (Salesforce/HubSpot)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1240, 180]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "resource": "message",
+        "channel": "={{ $env.SLACK_SALES_CHANNEL }}",
+        "text": "=🔥 *SQL CALIFICADO* — WF-TRS-01\n\n*Nombre:* {{ $json.full_name }}\n*Empresa:* {{ $json.company }} ({{ $json.company_size }} empleados)\n*Cargo:* {{ $json.job_title }}\n*Score:* {{ $json.final_score }}/100\n*BANT:* {{ $json.bant_score }} | *MEDDIC:* {{ $json.meddic_score }}\n*Presupuesto:* {{ $json.budget_signal }} | *Autoridad:* {{ $json.authority_signal }}\n*Timeline:* {{ $json.timeline_signal }}\n\n*Razón:* {{ $json.reason }}\n\n⚡ *Acción:* Llamar en <{{ $json.response_time_target_minutes }} minutos\n*Hook:* {{ $json.call_script_hook }}\n\n{{ $json.linkedin_url ? '🔗 LinkedIn: ' + $json.linkedin_url : '' }}\n📞 {{ $json.phone || 'Sin teléfono — usar email' }}"
+      },
+      "id": "trs01-007",
+      "name": "ACTION — Slack Alert SQL (SDR en <5min)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1240, 340]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-trs-01/sequence",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "lead_id", "value": "={{ $json.lead_id }}" },
+            { "name": "sequence_type", "value": "={{ $json.classification === 'MQL' ? 'HOT_NURTURE' : 'DISQUALIFY' }}" },
+            { "name": "score", "value": "={{ $json.final_score }}" },
+            { "name": "email", "value": "={{ $json.email }}" }
+          ]
+        }
+      },
+      "id": "trs01-008",
+      "name": "ACTION — Enroll en Secuencia Nurture/DQ",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1240, 500]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-trs-01/baseline",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "lead_id", "value": "={{ $json.lead_id }}" },
+            { "name": "classification", "value": "={{ $json.classification }}" },
+            { "name": "final_score", "value": "={{ $json.final_score }}" },
+            { "name": "source", "value": "={{ $('TRIGGER — Webhook Lead Nuevo').first().json.source || 'web' }}" }
+          ]
+        }
+      },
+      "id": "trs01-009",
+      "name": "BASELINE — Métricas Pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 340]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, lead_id: $('LOGIC — Parse Score + Enrich Profile').first().json.lead_id, classification: $('LOGIC — Parse Score + Enrich Profile').first().json.classification, final_score: $('LOGIC — Parse Score + Enrich Profile').first().json.final_score, response_time_minutes: $('LOGIC — Parse Score + Enrich Profile').first().json.response_time_target_minutes, workflow_id: 'WF-TRS-01' }) }}"
+      },
+      "id": "trs01-010",
+      "name": "RESPOND — Return Qualification",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1640, 340]
+    }
+  ],
+  "connections": {
+    "TRIGGER — Webhook Lead Nuevo": { "main": [[{ "node": "ENRICH — Clearbit Company + Person", "type": "main", "index": 0 }]] },
+    "ENRICH — Clearbit Company + Person": { "main": [[{ "node": "AI/ML — BANT/MEDDIC Score", "type": "main", "index": 0 }]] },
+    "AI/ML — BANT/MEDDIC Score": { "main": [[{ "node": "LOGIC — Parse Score + Enrich Profile", "type": "main", "index": 0 }]] },
+    "LOGIC — Parse Score + Enrich Profile": { "main": [[{ "node": "LOGIC — SQL vs MQL vs DQ", "type": "main", "index": 0 }]] },
+    "LOGIC — SQL vs MQL vs DQ": {
+      "main": [
+        [
+          { "node": "ACTION — CRM Update SQL (Salesforce/HubSpot)", "type": "main", "index": 0 },
+          { "node": "ACTION — Slack Alert SQL (SDR en <5min)", "type": "main", "index": 0 }
+        ],
+        [{ "node": "ACTION — Enroll en Secuencia Nurture/DQ", "type": "main", "index": 0 }]
+      ]
+    },
+    "ACTION — CRM Update SQL (Salesforce/HubSpot)": { "main": [[{ "node": "BASELINE — Métricas Pipeline", "type": "main", "index": 0 }]] },
+    "ACTION — Slack Alert SQL (SDR en <5min)": { "main": [[{ "node": "BASELINE — Métricas Pipeline", "type": "main", "index": 0 }]] },
+    "ACTION — Enroll en Secuencia Nurture/DQ": { "main": [[{ "node": "BASELINE — Métricas Pipeline", "type": "main", "index": 0 }]] },
+    "BASELINE — Métricas Pipeline": { "main": [[{ "node": "RESPOND — Return Qualification", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "v10v-certified" }, { "name": "lead-qualification" }, { "name": "bant-meddic" }, { "name": "quick-win" }],
+  "meta": {
+    "instanceId": "v10v-cerebro",
+    "description": "WF-TRS-01: Cualificación BANT/MEDDIC automática. Lead entra → Clearbit enriquece → GPT-4o-mini clasifica SQL/MQL/DQ con score 0-100 → SQL: Slack alerta SDR en <5 min + CRM update. MQL: secuencia nurture personalizada. DQ: marcado en CRM. Payback <1-3 meses.",
+    "roi_data": { "response_time_reduction": "de 4h a <5min para SQL", "conversion_rate_improvement": "28% más conversiones por respuesta rápida", "price_administered_eur_month": 500, "target_mrr": 500 },
+    "tech_stack": { "enrich": "Clearbit Combined API", "ai": "GPT-4o-mini (BANT/MEDDIC)", "crm": "Salesforce/HubSpot/Pipedrive", "alerts": "Slack" }
+  }
+}

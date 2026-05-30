@@ -1,0 +1,187 @@
+{
+  "name": "WF-LEG-05 — Knowledge Management Legal V10V",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 2 * * *" }] }
+      },
+      "id": "leg05-001",
+      "name": "TRIGGER — Schedule Diario 2AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-leg-05/fetch-legislation",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "sources", "value": "BOE,EUR_LEX,DIARI_OFICIAL" }]
+        }
+      },
+      "id": "leg05-002",
+      "name": "FETCH — BOE + EUR-Lex + Diaris Oficials",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "documents",
+        "options": {}
+      },
+      "id": "leg05-003",
+      "name": "LOGIC — Split Documents",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "message",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Eres un experto en derecho español y europeo. Analiza documentos legislativos y extrae: is_relevant (bool), relevance_score (0-100), legal_areas [string] (e.g. contract_law, employment, privacy, tax, mercantile), key_changes [string], affected_clauses [string], action_items [string], summary_es (200 palabras máx), effective_date, metadata. Devuelve JSON."
+            },
+            {
+              "role": "user",
+              "content": "=Documento: {{ $json.title }}\nFuente: {{ $json.source }}\nFecha: {{ $json.date }}\n\nTexto:\n{{ ($json.text || '').substring(0, 4000) }}"
+            }
+          ]
+        },
+        "options": { "maxTokens": 1200, "temperature": 0 }
+      },
+      "id": "leg05-004",
+      "name": "AI/ML — Analizar Relevancia Legal (GPT-4o)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [840, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "id": "relevant", "leftValue": "={{ (() => { try { const d = JSON.parse($input.first().json.message?.content?.match(/\\{[\\s\\S]*\\}/)?.[0] || '{}'); return d.is_relevant; } catch(e) { return false; } })() }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ]
+        }
+      },
+      "id": "leg05-005",
+      "name": "LOGIC — Es relevante?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1040, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-trs-06/kb/ingest",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "kb_id", "value": "legal_kb" },
+            { "name": "doc_id", "value": "={{ $('LOGIC — Split Documents').first().json.doc_id || `leg-${Date.now()}` }}" },
+            { "name": "text", "value": "={{ $('LOGIC — Split Documents').first().json.text }}" },
+            { "name": "metadata", "value": "={{ JSON.stringify({ source: $('LOGIC — Split Documents').first().json.source, date: $('LOGIC — Split Documents').first().json.date, title: $('LOGIC — Split Documents').first().json.title, workflow: 'WF-LEG-05' }) }}" }
+          ]
+        }
+      },
+      "id": "leg05-006",
+      "name": "INGEST — ChromaDB RAG Legal KB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1240, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-leg-05/update-knowledge-graph",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "doc_id", "value": "={{ $('LOGIC — Split Documents').first().json.doc_id }}" },
+            { "name": "legal_areas", "value": "={{ JSON.stringify($input.first().json.legal_areas || []) }}" },
+            { "name": "key_changes", "value": "={{ JSON.stringify($input.first().json.key_changes || []) }}" },
+            { "name": "affected_clauses", "value": "={{ JSON.stringify($input.first().json.affected_clauses || []) }}" },
+            { "name": "effective_date", "value": "={{ $input.first().json.effective_date }}" }
+          ]
+        }
+      },
+      "id": "leg05-007",
+      "name": "ACTION — Actualizar Knowledge Graph",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1240, 360]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "resource": "message",
+        "channel": "={{ $env.SLACK_LEGAL_CHANNEL }}",
+        "text": "=⚖️ *NUEVA LEGISLACIÓN RELEVANTE — WF-LEG-05*\n\n*Título:* {{ $('LOGIC — Split Documents').first().json.title }}\n*Fuente:* {{ $('LOGIC — Split Documents').first().json.source }}\n*Fecha efectiva:* {{ $input.first().json.effective_date || 'No especificada' }}\n*Relevancia:* {{ $input.first().json.relevance_score }}/100\n\n*Áreas legales afectadas:*\n{{ ($input.first().json.legal_areas || []).map(a => `• ${a}`).join('\\n') }}\n\n*Cambios clave:*\n{{ ($input.first().json.key_changes || []).slice(0,3).map(c => `→ ${c}`).join('\\n') }}\n\n*Acciones requeridas:*\n{{ ($input.first().json.action_items || []).map(a => `☐ ${a}`).join('\\n') }}\n\n_KB Legal actualizada automáticamente._"
+      },
+      "id": "leg05-008",
+      "name": "ACTION — Slack Legal Team Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1440, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-leg-05/quality-check",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "kb_id", "value": "legal_kb" }]
+        }
+      },
+      "id": "leg05-009",
+      "name": "ACTION — Quality Check KB Embeddings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1640, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-leg-05/baseline",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "docs_processed", "value": "=1" },
+            { "name": "docs_ingested", "value": "=1" },
+            { "name": "kb_quality_score", "value": "={{ $input.first().json.quality_score || 0 }}" }
+          ]
+        }
+      },
+      "id": "leg05-010",
+      "name": "BASELINE — KB Health Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1840, 300]
+    }
+  ],
+  "connections": {
+    "TRIGGER — Schedule Diario 2AM": { "main": [[{ "node": "FETCH — BOE + EUR-Lex + Diaris Oficials", "type": "main", "index": 0 }]] },
+    "FETCH — BOE + EUR-Lex + Diaris Oficials": { "main": [[{ "node": "LOGIC — Split Documents", "type": "main", "index": 0 }]] },
+    "LOGIC — Split Documents": { "main": [[{ "node": "AI/ML — Analizar Relevancia Legal (GPT-4o)", "type": "main", "index": 0 }]] },
+    "AI/ML — Analizar Relevancia Legal (GPT-4o)": { "main": [[{ "node": "LOGIC — Es relevante?", "type": "main", "index": 0 }]] },
+    "LOGIC — Es relevante?": {
+      "main": [
+        [{ "node": "INGEST — ChromaDB RAG Legal KB", "type": "main", "index": 0 }, { "node": "ACTION — Actualizar Knowledge Graph", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "INGEST — ChromaDB RAG Legal KB": { "main": [[{ "node": "ACTION — Slack Legal Team Alert", "type": "main", "index": 0 }]] },
+    "ACTION — Actualizar Knowledge Graph": { "main": [[{ "node": "ACTION — Slack Legal Team Alert", "type": "main", "index": 0 }]] },
+    "ACTION — Slack Legal Team Alert": { "main": [[{ "node": "ACTION — Quality Check KB Embeddings", "type": "main", "index": 0 }]] },
+    "ACTION — Quality Check KB Embeddings": { "main": [[{ "node": "BASELINE — KB Health Metrics", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "v10v-certified" }, { "name": "legal-kb" }, { "name": "rag" }, { "name": "boe-eurlex" }],
+  "meta": {
+    "instanceId": "v10v-cerebro",
+    "description": "WF-LEG-05: Diario 2AM → fetcha BOE + EUR-Lex + Diaris → GPT-4o clasifica relevancia → ingesta ChromaDB legal_kb + actualiza knowledge graph → Slack legal team. Synergy con WF-LEG-02 (usa la KB para scoring de riesgo).",
+    "roi_data": { "manual_research_hours_saved_week": 20, "price_administered_eur_month": 600 }
+  }
+}

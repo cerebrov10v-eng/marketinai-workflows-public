@@ -1,0 +1,261 @@
+{
+  "name": "WF-MKT-07 — Carrito Abandonado Multicanal V10V",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wf-mkt-07/cart-abandon",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "mkt07-001",
+      "name": "TRIGGER — Cart Abandon Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "wf-mkt07-cart"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-inv-01/state/read",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "contact_id", "value": "={{ $json.customer_email }}" },
+            { "name": "namespace", "value": "journey_biography" },
+            { "name": "ttl_months", "value": "24" }
+          ]
+        }
+      },
+      "id": "mkt07-002",
+      "name": "STATE READ — Historial Cliente (Redis)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "message",
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Segmenta clientes por probabilidad de recuperación y calcula CLTV. Devuelve JSON: { segment: 'VIP'|'STANDARD'|'AT_RISK'|'LOST', recovery_probability: 0.0-1.0, cltv_eur: number, recommended_discount: 0|5|10|15|20, channel_preference: 'email'|'sms'|'push'|'whatsapp', urgency_message: string, personalized_subject: string }"
+            },
+            {
+              "role": "user",
+              "content": "=CARRITO ABANDONADO:\nProductos: {{ JSON.stringify($('TRIGGER — Cart Abandon Event').first().json.items || []) }}\nValor total: €{{ $('TRIGGER — Cart Abandon Event').first().json.cart_value }}\n\nHISTORIAL CLIENTE:\nEtapa: {{ $input.first().json.profile?.stage || 'COLD' }}\nTotal compras previas: {{ $input.first().json.profile?.total_revenue || 0 }}€\nEngagement: {{ $input.first().json.profile?.engagement_score || 0 }}/100\nTouchpoints: {{ ($input.first().json.history || []).length }}\nAbandonos previos recuperados: {{ ($input.first().json.history || []).filter(e => e.event_type === 'cart_recovered').length }}\n\nCalcula segmento y estrategia óptima de recuperación."
+            }
+          ]
+        },
+        "options": { "maxTokens": 600, "temperature": 0.1 }
+      },
+      "id": "mkt07-003",
+      "name": "AI/ML — Segmentación CLTV + Recovery",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.message?.content || '{}';\nconst trigger = $('TRIGGER — Cart Abandon Event').first().json;\nlet seg;\ntry { seg = JSON.parse(raw.match(/\\{[\\s\\S]*\\}/)?.[0] || raw); } catch(e) { seg = { segment: 'STANDARD', recovery_probability: 0.3, recommended_discount: 10, channel_preference: 'email' }; }\nseg.cart_id = trigger.cart_id || `CART-${Date.now()}`;\nseg.customer_email = trigger.customer_email;\nseg.customer_name = trigger.customer_name;\nseg.cart_value = trigger.cart_value;\nseg.cart_url = trigger.cart_url;\nseg.items = trigger.items || [];\nseg.workflow_id = 'WF-MKT-07';\nseg.sequence_started_at = new Date().toISOString();\nreturn [{ json: seg }];"
+      },
+      "id": "mkt07-004",
+      "name": "LOGIC — Parse Segmentation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "id": "not-lost", "leftValue": "={{ $json.segment }}", "rightValue": "LOST", "operator": { "type": "string", "operation": "notEquals" } }]
+        }
+      },
+      "id": "mkt07-005",
+      "name": "LOGIC — Vale la pena recuperar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1040, 300]
+    },
+    {
+      "parameters": {
+        "amount": 3600,
+        "unit": "seconds"
+      },
+      "id": "mkt07-006",
+      "name": "DELAY — +1 hora",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1240, 180]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-mkt-07/send-email",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "to", "value": "={{ $json.customer_email }}" },
+            { "name": "customer_name", "value": "={{ $json.customer_name }}" },
+            { "name": "subject", "value": "={{ $json.personalized_subject }}" },
+            { "name": "cart_url", "value": "={{ $json.cart_url }}" },
+            { "name": "items", "value": "={{ JSON.stringify($json.items) }}" },
+            { "name": "cart_value", "value": "={{ $json.cart_value }}" },
+            { "name": "discount", "value": "0" },
+            { "name": "touch", "value": "1" }
+          ]
+        }
+      },
+      "id": "mkt07-007",
+      "name": "ACTION — Email Touch 1 (sin descuento)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 180]
+    },
+    {
+      "parameters": {
+        "amount": 86400,
+        "unit": "seconds"
+      },
+      "id": "mkt07-008",
+      "name": "DELAY — +24 horas",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1640, 180]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-mkt-07/check-recovered",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [{ "name": "cart_id", "value": "={{ $json.cart_id }}" }]
+        }
+      },
+      "id": "mkt07-009",
+      "name": "DATA — ¿Ya recuperó el carrito?",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1840, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "id": "not-recovered", "leftValue": "={{ $input.first().json.recovered }}", "rightValue": false, "operator": { "type": "boolean", "operation": "equals" } }]
+        }
+      },
+      "id": "mkt07-010",
+      "name": "LOGIC — Sigue disponible?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2040, 180]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-mkt-07/send-sms",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "to", "value": "={{ $('LOGIC — Parse Segmentation').first().json.customer_email }}" },
+            { "name": "customer_name", "value": "={{ $('LOGIC — Parse Segmentation').first().json.customer_name }}" },
+            { "name": "cart_url", "value": "={{ $('LOGIC — Parse Segmentation').first().json.cart_url }}" },
+            { "name": "discount", "value": "={{ $('LOGIC — Parse Segmentation').first().json.recommended_discount }}" },
+            { "name": "cart_value", "value": "={{ $('LOGIC — Parse Segmentation').first().json.cart_value }}" },
+            { "name": "urgency_message", "value": "={{ $('LOGIC — Parse Segmentation').first().json.urgency_message }}" }
+          ]
+        }
+      },
+      "id": "mkt07-011",
+      "name": "ACTION — SMS Touch 2 (con descuento %)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2240, 120]
+    },
+    {
+      "parameters": {
+        "amount": 259200,
+        "unit": "seconds"
+      },
+      "id": "mkt07-012",
+      "name": "DELAY — +72 horas",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [2240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-mkt-07/send-push",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "contact_id", "value": "={{ $('LOGIC — Parse Segmentation').first().json.customer_email }}" },
+            { "name": "title", "value": "⏰ Últimas unidades disponibles" },
+            { "name": "body", "value": "=Tu carrito de €{{ $('LOGIC — Parse Segmentation').first().json.cart_value }} sigue esperando. {{ $('LOGIC — Parse Segmentation').first().json.urgency_message }}" },
+            { "name": "cart_url", "value": "={{ $('LOGIC — Parse Segmentation').first().json.cart_url }}" }
+          ]
+        }
+      },
+      "id": "mkt07-013",
+      "name": "ACTION — Push Notif Touch 3 (urgencia social)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2440, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-mkt-07/baseline",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "cart_id", "value": "={{ $('LOGIC — Parse Segmentation').first().json.cart_id }}" },
+            { "name": "segment", "value": "={{ $('LOGIC — Parse Segmentation').first().json.segment }}" },
+            { "name": "cart_value", "value": "={{ $('LOGIC — Parse Segmentation').first().json.cart_value }}" },
+            { "name": "touches_completed", "value": "3" }
+          ]
+        }
+      },
+      "id": "mkt07-014",
+      "name": "BASELINE — Revenue Recovery Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2640, 300]
+    }
+  ],
+  "connections": {
+    "TRIGGER — Cart Abandon Event": { "main": [[{ "node": "STATE READ — Historial Cliente (Redis)", "type": "main", "index": 0 }]] },
+    "STATE READ — Historial Cliente (Redis)": { "main": [[{ "node": "AI/ML — Segmentación CLTV + Recovery", "type": "main", "index": 0 }]] },
+    "AI/ML — Segmentación CLTV + Recovery": { "main": [[{ "node": "LOGIC — Parse Segmentation", "type": "main", "index": 0 }]] },
+    "LOGIC — Parse Segmentation": { "main": [[{ "node": "LOGIC — Vale la pena recuperar?", "type": "main", "index": 0 }]] },
+    "LOGIC — Vale la pena recuperar?": {
+      "main": [
+        [{ "node": "DELAY — +1 hora", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "DELAY — +1 hora": { "main": [[{ "node": "ACTION — Email Touch 1 (sin descuento)", "type": "main", "index": 0 }]] },
+    "ACTION — Email Touch 1 (sin descuento)": { "main": [[{ "node": "DELAY — +24 horas", "type": "main", "index": 0 }]] },
+    "DELAY — +24 horas": { "main": [[{ "node": "DATA — ¿Ya recuperó el carrito?", "type": "main", "index": 0 }]] },
+    "DATA — ¿Ya recuperó el carrito?": { "main": [[{ "node": "LOGIC — Sigue disponible?", "type": "main", "index": 0 }]] },
+    "LOGIC — Sigue disponible?": {
+      "main": [
+        [
+          { "node": "ACTION — SMS Touch 2 (con descuento %)", "type": "main", "index": 0 },
+          { "node": "DELAY — +72 horas", "type": "main", "index": 0 }
+        ],
+        [{ "node": "BASELINE — Revenue Recovery Metrics", "type": "main", "index": 0 }]
+      ]
+    },
+    "DELAY — +72 horas": { "main": [[{ "node": "ACTION — Push Notif Touch 3 (urgencia social)", "type": "main", "index": 0 }]] },
+    "ACTION — Push Notif Touch 3 (urgencia social)": { "main": [[{ "node": "BASELINE — Revenue Recovery Metrics", "type": "main", "index": 0 }]] },
+    "ACTION — SMS Touch 2 (con descuento %)": { "main": [[{ "node": "BASELINE — Revenue Recovery Metrics", "type": "main", "index": 0 }]] },
+    "BASELINE — Revenue Recovery Metrics": { "main": [] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "v10v-certified" }, { "name": "ecommerce" }, { "name": "cart-recovery" }, { "name": "multicanal" }],
+  "meta": {
+    "instanceId": "v10v-cerebro",
+    "description": "WF-MKT-07: Carrito abandonado → lee historial 24m → AI segmenta (VIP/STANDARD/AT_RISK/LOST) → secuencia 3 toques: +1h email (sin descuento) → +24h SMS (descuento escalonado según segmento) → +72h push notif (urgencia social). Benchmarks: Slazenger 49x ROI, NA-KD 72x ROI.",
+    "roi_data": { "slazenger_roi": "49x en 8 semanas", "na_kd_roi": "72x en 12 meses", "recovery_rate_typical": "15-25%", "price_administered_eur_month": 500 }
+  }
+}

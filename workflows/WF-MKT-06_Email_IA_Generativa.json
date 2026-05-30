@@ -1,1 +1,149 @@
-{"name": "WF-MKT-06 \u00e2\u20ac\u201d Email IA Generativa Personalizado V10V", "nodes": [{"parameters": {"rule": {"interval": [{"field": "cronExpression", "expression": "0 9 * * 1-5"}]}}, "id": "mkt06-001", "name": "TRIGGER \u00e2\u20ac\u201d Schedule Diario 9AM (L-V)", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2, "position": [240, 300]}, {"parameters": {"url": "={{ $env.V10V_API_URL }}/api/wf-mkt-06/segments", "options": {}}, "id": "mkt06-002", "name": "DATA \u00e2\u20ac\u201d Cargar Segmentos CRM", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [440, 300]}, {"parameters": {"fieldToSplitOut": "contacts", "options": {}}, "id": "mkt06-003", "name": "LOGIC \u00e2\u20ac\u201d Split por Contacto", "type": "n8n-nodes-base.splitOut", "typeVersion": 1, "position": [640, 300]}, {"parameters": {"url": "={{ $env.V10V_API_URL }}/api/wf-inv-01/state/read", "sendBody": true, "bodyParameters": {"parameters": [{"name": "contact_id", "value": "={{ $json.email }}"}, {"name": "namespace", "value": "journey_biography"}, {"name": "ttl_months", "value": "24"}]}}, "id": "mkt06-004", "name": "STATE READ \u00e2\u20ac\u201d Historia 24 Meses (Redis)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [840, 300]}, {"parameters": {"resource": "chat", "operation": "message", "model": "gpt-4o", "messages": {"values": [{"role": "system", "content": "Eres un copywriter experto en email marketing B2B. Genera emails altamente personalizados basados en el historial completo del contacto. El email debe: (1) usar el nombre del contacto, (2) referenciar su industria/empresa, (3) conectar con su \u00c3\u00baltima interacci\u00c3\u00b3n, (4) incluir un CTA claro y \u00c3\u00banico, (5) tener un asunto de apertura >45% (usa curiosidad o beneficio espec\u00c3\u00adfico). Devuelve JSON con: subject, preview_text, body_html, body_text, cta_text, cta_url, personalization_tokens_used."}, {"role": "user", "content": "=CONTACTO:\nNombre: {{ $('LOGIC \u00e2\u20ac\u201d Split por Contacto').first().json.first_name }} {{ $('LOGIC \u00e2\u20ac\u201d Split por Contacto').first().json.last_name }}\nEmpresa: {{ $('LOGIC \u00e2\u20ac\u201d Split por Contacto').first().json.company }}\nCargo: {{ $('LOGIC \u00e2\u20ac\u201d Split por Contacto').first().json.job_title }}\nIndustria: {{ $('LOGIC \u00e2\u20ac\u201d Split por Contacto').first().json.industry }}\nSegmento: {{ $('LOGIC \u00e2\u20ac\u201d Split por Contacto').first().json.segment }}\n\nHISTORIA 24 MESES:\nEtapa: {{ $input.first().json.profile?.stage || 'COLD' }}\nEngagement score: {{ $input.first().json.profile?.engagement_score || 0 }}/100\n\u00c3\u0161ltima interacci\u00c3\u00b3n: {{ $input.first().json.profile?.last_event || 'primera vez' }}\nProductos de inter\u00c3\u00a9s: {{ ($input.first().json.profile?.product_interests || []).join(', ') || 'ninguno registrado' }}\nTouchpoints totales: {{ ($input.first().json.history || []).length }}\n\u00c3\u0161ltimos 3 eventos: {{ JSON.stringify(($input.first().json.history || []).slice(-3).map(e => e.event_type)) }}\n\nCAMPA\u00c3\u2018A ACTUAL:\nTema: {{ $('DATA \u00e2\u20ac\u201d Cargar Segmentos CRM').first().json.campaign_topic || 'valor de producto' }}\nObjetivo: {{ $('DATA \u00e2\u20ac\u201d Cargar Segmentos CRM').first().json.campaign_goal || 'demo' }}\nVoz de marca: profesional pero cercana, sin jerga excesiva, orientada a ROI\n\nGenera el email personalizado en JSON."}]}, "options": {"maxTokens": 2000, "temperature": 0.7}}, "id": "mkt06-005", "name": "AI/ML \u00e2\u20ac\u201d Generate Personalized Email (GPT-4o)", "type": "@n8n/n8n-nodes-langchain.openAi", "typeVersion": 1, "position": [1040, 300]}, {"parameters": {"jsCode": "const raw = $input.first().json.message?.content || '{}';\nconst contact = $('LOGIC \u00e2\u20ac\u201d Split por Contacto').first().json;\nlet email;\ntry { email = JSON.parse(raw.match(/\\{[\\s\\S]*\\}/)?.[0] || raw); } catch(e) { return []; }\nif (!email.subject || !email.body_html) return [];\nemail.to = contact.email;\nemail.contact_id = contact.id || contact.email;\nemail.segment = contact.segment;\nemail.campaign_id = $('DATA \u00e2\u20ac\u201d Cargar Segmentos CRM').first().json.campaign_id;\nemail.ab_variant = Math.random() < 0.5 ? 'A' : 'B';\nreturn [{ json: email }];"}, "id": "mkt06-006", "name": "LOGIC \u00e2\u20ac\u201d Parse + Assign A/B Variant", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1240, 300]}, {"parameters": {"url": "={{ $env.V10V_API_URL }}/api/wf-mkt-06/send", "sendBody": true, "bodyParameters": {"parameters": [{"name": "to", "value": "={{ $json.to }}"}, {"name": "subject", "value": "={{ $json.subject }}"}, {"name": "preview_text", "value": "={{ $json.preview_text }}"}, {"name": "body_html", "value": "={{ $json.body_html }}"}, {"name": "campaign_id", "value": "={{ $json.campaign_id }}"}, {"name": "contact_id", "value": "={{ $json.contact_id }}"}, {"name": "ab_variant", "value": "={{ $json.ab_variant }}"}]}}, "id": "mkt06-007", "name": "ACTION \u00e2\u20ac\u201d Send Email (SendGrid/Mailchimp)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1440, 300]}, {"parameters": {"url": "={{ $env.V10V_API_URL }}/api/wf-mkt-06/baseline", "sendBody": true, "bodyParameters": {"parameters": [{"name": "contact_id", "value": "={{ $json.contact_id }}"}, {"name": "campaign_id", "value": "={{ $json.campaign_id }}"}, {"name": "ab_variant", "value": "={{ $json.ab_variant }}"}, {"name": "segment", "value": "={{ $json.segment }}"}, {"name": "personalization_tokens", "value": "={{ ($json.personalization_tokens_used || []).length }}"}]}}, "id": "mkt06-008", "name": "BASELINE \u00e2\u20ac\u201d Email Performance Metrics", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1640, 300]}], "connections": {"TRIGGER \u00e2\u20ac\u201d Schedule Diario 9AM (L-V)": {"main": [[{"node": "DATA \u00e2\u20ac\u201d Cargar Segmentos CRM", "type": "main", "index": 0}]]}, "DATA \u00e2\u20ac\u201d Cargar Segmentos CRM": {"main": [[{"node": "LOGIC \u00e2\u20ac\u201d Split por Contacto", "type": "main", "index": 0}]]}, "LOGIC \u00e2\u20ac\u201d Split por Contacto": {"main": [[{"node": "STATE READ \u00e2\u20ac\u201d Historia 24 Meses (Redis)", "type": "main", "index": 0}]]}, "STATE READ \u00e2\u20ac\u201d Historia 24 Meses (Redis)": {"main": [[{"node": "AI/ML \u00e2\u20ac\u201d Generate Personalized Email (GPT-4o)", "type": "main", "index": 0}]]}, "AI/ML \u00e2\u20ac\u201d Generate Personalized Email (GPT-4o)": {"main": [[{"node": "LOGIC \u00e2\u20ac\u201d Parse + Assign A/B Variant", "type": "main", "index": 0}]]}, "LOGIC \u00e2\u20ac\u201d Parse + Assign A/B Variant": {"main": [[{"node": "ACTION \u00e2\u20ac\u201d Send Email (SendGrid/Mailchimp)", "type": "main", "index": 0}]]}, "ACTION \u00e2\u20ac\u201d Send Email (SendGrid/Mailchimp)": {"main": [[{"node": "BASELINE \u00e2\u20ac\u201d Email Performance Metrics", "type": "main", "index": 0}]]}}, "settings": {"executionOrder": "v1", "saveManualExecutions": true}, "tags": [{"name": "v10v-certified"}, {"name": "email-marketing"}, {"name": "gpt-4o"}, {"name": "ab-testing"}], "meta": {"instanceId": "v10v-cerebro", "description": "WF-MKT-06: Email 100% personalizado con GPT-4o. Lee historia 24 meses (WF-INV-01 Redis) \u00e2\u2020\u2019 genera asunto+cuerpo+CTA \u00c3\u00banicos por contacto \u00e2\u2020\u2019 A/B testing autom\u00c3\u00a1tico \u00e2\u2020\u2019 320% m\u00c3\u00a1s ingresos que email no automatizado.", "roi_data": {"revenue_increase": "320% vs email manual", "open_rate_target": ">45%", "price_administered_eur_month": 600}, "synergy": "Usa datos de WF-INV-01 (Journey Biogr\u00c3\u00a1fica) \u00e2\u20ac\u201d el ecosistema V10V se amplifica"}}
+{
+  "name": "WF-MKT-06 — Email IA Generativa Personalizado V10V",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 9 * * 1-5" }] }
+      },
+      "id": "mkt06-001",
+      "name": "TRIGGER — Schedule Diario 9AM (L-V)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-mkt-06/segments",
+        "options": {}
+      },
+      "id": "mkt06-002",
+      "name": "DATA — Cargar Segmentos CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "contacts",
+        "options": {}
+      },
+      "id": "mkt06-003",
+      "name": "LOGIC — Split por Contacto",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-inv-01/state/read",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "contact_id", "value": "={{ $json.email }}" },
+            { "name": "namespace", "value": "journey_biography" },
+            { "name": "ttl_months", "value": "24" }
+          ]
+        }
+      },
+      "id": "mkt06-004",
+      "name": "STATE READ — Historia 24 Meses (Redis)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [840, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "message",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Eres un copywriter experto en email marketing B2B. Genera emails altamente personalizados basados en el historial completo del contacto. El email debe: (1) usar el nombre del contacto, (2) referenciar su industria/empresa, (3) conectar con su última interacción, (4) incluir un CTA claro y único, (5) tener un asunto de apertura >45% (usa curiosidad o beneficio específico). Devuelve JSON con: subject, preview_text, body_html, body_text, cta_text, cta_url, personalization_tokens_used."
+            },
+            {
+              "role": "user",
+              "content": "=CONTACTO:\nNombre: {{ $('LOGIC — Split por Contacto').first().json.first_name }} {{ $('LOGIC — Split por Contacto').first().json.last_name }}\nEmpresa: {{ $('LOGIC — Split por Contacto').first().json.company }}\nCargo: {{ $('LOGIC — Split por Contacto').first().json.job_title }}\nIndustria: {{ $('LOGIC — Split por Contacto').first().json.industry }}\nSegmento: {{ $('LOGIC — Split por Contacto').first().json.segment }}\n\nHISTORIA 24 MESES:\nEtapa: {{ $input.first().json.profile?.stage || 'COLD' }}\nEngagement score: {{ $input.first().json.profile?.engagement_score || 0 }}/100\nÚltima interacción: {{ $input.first().json.profile?.last_event || 'primera vez' }}\nProductos de interés: {{ ($input.first().json.profile?.product_interests || []).join(', ') || 'ninguno registrado' }}\nTouchpoints totales: {{ ($input.first().json.history || []).length }}\nÚltimos 3 eventos: {{ JSON.stringify(($input.first().json.history || []).slice(-3).map(e => e.event_type)) }}\n\nCAMPAÑA ACTUAL:\nTema: {{ $('DATA — Cargar Segmentos CRM').first().json.campaign_topic || 'valor de producto' }}\nObjetivo: {{ $('DATA — Cargar Segmentos CRM').first().json.campaign_goal || 'demo' }}\nVoz de marca: profesional pero cercana, sin jerga excesiva, orientada a ROI\n\nGenera el email personalizado en JSON."
+            }
+          ]
+        },
+        "options": { "maxTokens": 2000, "temperature": 0.7 }
+      },
+      "id": "mkt06-005",
+      "name": "AI/ML — Generate Personalized Email (GPT-4o)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [1040, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.message?.content || '{}';\nconst contact = $('LOGIC — Split por Contacto').first().json;\nlet email;\ntry { email = JSON.parse(raw.match(/\\{[\\s\\S]*\\}/)?.[0] || raw); } catch(e) { return []; }\nif (!email.subject || !email.body_html) return [];\nemail.to = contact.email;\nemail.contact_id = contact.id || contact.email;\nemail.segment = contact.segment;\nemail.campaign_id = $('DATA — Cargar Segmentos CRM').first().json.campaign_id;\nemail.ab_variant = Math.random() < 0.5 ? 'A' : 'B';\nreturn [{ json: email }];"
+      },
+      "id": "mkt06-006",
+      "name": "LOGIC — Parse + Assign A/B Variant",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-mkt-06/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "to", "value": "={{ $json.to }}" },
+            { "name": "subject", "value": "={{ $json.subject }}" },
+            { "name": "preview_text", "value": "={{ $json.preview_text }}" },
+            { "name": "body_html", "value": "={{ $json.body_html }}" },
+            { "name": "campaign_id", "value": "={{ $json.campaign_id }}" },
+            { "name": "contact_id", "value": "={{ $json.contact_id }}" },
+            { "name": "ab_variant", "value": "={{ $json.ab_variant }}" }
+          ]
+        }
+      },
+      "id": "mkt06-007",
+      "name": "ACTION — Send Email (SendGrid/Mailchimp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.V10V_API_URL }}/api/wf-mkt-06/baseline",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "contact_id", "value": "={{ $json.contact_id }}" },
+            { "name": "campaign_id", "value": "={{ $json.campaign_id }}" },
+            { "name": "ab_variant", "value": "={{ $json.ab_variant }}" },
+            { "name": "segment", "value": "={{ $json.segment }}" },
+            { "name": "personalization_tokens", "value": "={{ ($json.personalization_tokens_used || []).length }}" }
+          ]
+        }
+      },
+      "id": "mkt06-008",
+      "name": "BASELINE — Email Performance Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1640, 300]
+    }
+  ],
+  "connections": {
+    "TRIGGER — Schedule Diario 9AM (L-V)": { "main": [[{ "node": "DATA — Cargar Segmentos CRM", "type": "main", "index": 0 }]] },
+    "DATA — Cargar Segmentos CRM": { "main": [[{ "node": "LOGIC — Split por Contacto", "type": "main", "index": 0 }]] },
+    "LOGIC — Split por Contacto": { "main": [[{ "node": "STATE READ — Historia 24 Meses (Redis)", "type": "main", "index": 0 }]] },
+    "STATE READ — Historia 24 Meses (Redis)": { "main": [[{ "node": "AI/ML — Generate Personalized Email (GPT-4o)", "type": "main", "index": 0 }]] },
+    "AI/ML — Generate Personalized Email (GPT-4o)": { "main": [[{ "node": "LOGIC — Parse + Assign A/B Variant", "type": "main", "index": 0 }]] },
+    "LOGIC — Parse + Assign A/B Variant": { "main": [[{ "node": "ACTION — Send Email (SendGrid/Mailchimp)", "type": "main", "index": 0 }]] },
+    "ACTION — Send Email (SendGrid/Mailchimp)": { "main": [[{ "node": "BASELINE — Email Performance Metrics", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "tags": [{ "name": "v10v-certified" }, { "name": "email-marketing" }, { "name": "gpt-4o" }, { "name": "ab-testing" }],
+  "meta": {
+    "instanceId": "v10v-cerebro",
+    "description": "WF-MKT-06: Email 100% personalizado con GPT-4o. Lee historia 24 meses (WF-INV-01 Redis) → genera asunto+cuerpo+CTA únicos por contacto → A/B testing automático → 320% más ingresos que email no automatizado.",
+    "roi_data": { "revenue_increase": "320% vs email manual", "open_rate_target": ">45%", "price_administered_eur_month": 600 },
+    "synergy": "Usa datos de WF-INV-01 (Journey Biográfica) — el ecosistema V10V se amplifica"
+  }
+}
